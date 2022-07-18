@@ -1,0 +1,373 @@
+model Robot
+-- No uncertainty
+
+
+class Mobile
+attributes
+-- state attributes 
+    name      : String  
+    _position : Real init: 0.0   -- current position
+    max_speed : Real init: 10.0  -- max speed
+    sensor_accuracy : Real init: 0.05 -- precision
+    speed_sensor_accuracy : Real init: 0.01
+operations
+    get_position():Real -- returns a blurred value of the current position
+        = self._position + (0.0).normalDistr(self.sensor_accuracy)
+        -- = self._position * (1.0).normalDistr(self.sensor_accuracy)
+
+    get_real_distance(other:Mobile) : Real 
+        = (other._position - self._position).abs()
+
+    get_distance(other:Mobile) : Real =
+    --    = (other.get_position() - self._position).abs()
+      let real_distance:Real = self.get_real_distance(other) in
+        real_distance.normalDistr(real_distance* self.sensor_accuracy) -- cambiar si distance*
+--        real_distance.normalDistr(self.sensor_accuracy) -- cambio 1 -- -- cambiar si NO distance*
+--        real_distance + (0.0).normalDistr(self.sensor_accuracy) -- cambio 1 -- funciona igual que el anterior
+
+
+    move(speed: Real, time: Real) 
+      begin
+        if (speed > self.max_speed) then speed := self.max_speed end;
+        if (speed < - self.max_speed) then speed := -self.max_speed end;
+        self._position := self._position + speed * time; -- # * gauss(1.0, 0.01) -- due to friction, etc
+        -- WriteLine(self.name + ': Exact Position=' + self._position.toString() + ' speed=' + speed.toString());
+      end
+end -- class Mobile
+
+class Robot < Mobile
+attributes 
+-- robot state attributes     
+    average_real_distance : Real init: 0.0
+    min_real_distance : Real init: 999999999.0
+    count : Integer init : 0
+operations
+
+    update_distance(other: Mobile)
+      begin
+        declare real_distance:Real;
+        self.count := self.count + 1;
+        real_distance := self.get_real_distance(other);
+        self.average_real_distance := self.average_real_distance + real_distance;
+        self.min_real_distance := self.min_real_distance.min(real_distance);
+      end
+
+    get_average_distance() : Real = self.average_real_distance / self.count
+
+    get_min_distance() : Real = self.min_real_distance
+
+end -- class Robot
+
+abstract class Controller 
+    attributes 
+        -- 1.59, 0.75, 0.51 
+        -- 0.8, 0.0, 0.02 -- ojo, cambio 2, era el que teniamos antes
+        Kp : Real init: 0.8 -- 1.59 -- 0.8 -- .45 
+        Ki : Real init: 0.0 -- 0.75 -- 0.0
+        Kd : Real init: 0.02 -- 0.51 --0.02
+end
+
+class BasicRobotController < Controller
+    attributes 
+        robot_estimated_position : Real init : 0.0 
+        speed : Real init: 0.0
+        max_acceleration : Real init: 5.0
+        min_speed : Real init:1.0
+        previous_error : Real init:0.0
+        error0:Real init:0.0
+        error1:Real init:0.0
+        error2:Real init:0.0
+     operations
+        get_error(target_distance:Real) : Real = self.robot.get_distance(self.robot.target) - target_distance
+
+        compute_target_speed(target_distance: Real, dt: Real):Real 
+        begin
+            declare error:Real, proportional: Real, derivative:Real, integral:Real;
+            error := self.get_error(target_distance);
+            self.error2 := self.error1;
+            self.error1 := self.error0;
+            self.error0 := error;
+            proportional := error;
+            derivative := (error - self.error1) / dt;
+            integral := (error + self.error1 + self.error2) * dt;
+            -- # speed = self.speed + self.A0 * self.error[0] + self.A1 * self.error[1] + self.A2 * self.error[2]
+            result:=self.Kp * proportional + self.Ki * integral + self.Kd * derivative;
+        end
+
+
+        move_robot(target:Mobile, target_distance: Real, dt:Real) 
+        begin
+            declare error:Real, delta_speed:Real, 
+                    proportional : Real, derivative:Real, speed:Real, signe:Real;
+            speed:=self.compute_target_speed(target_distance, dt);
+            speed := self.robot.max_speed.min(speed);
+            speed := speed.max(self.min_speed);
+            delta_speed := speed-self.speed;
+            if (delta_speed <> 0.0) then 
+                signe := delta_speed/delta_speed.abs();
+                self.speed := if delta_speed.abs() < self.max_acceleration*dt then speed else self.speed + signe * self.max_acceleration*dt endif;
+            end;
+            self.robot.move(self.speed, dt);
+            -- CHECK THIS
+            self.robot_estimated_position := self.robot_estimated_position + (self.speed * dt);
+            --# print('Estimated position='+str(self.robot_estimated_position))
+            -- WriteLine(self.robot.name+': Estimated position='+self.robot_estimated_position.toString());
+        end;
+
+
+
+    end -- class BasicRobotController
+
+class RobustRobotController < Controller
+    attributes 
+        robot_estimated_position : Real init : 0.0 
+        speed : Real init: 0.0
+        max_acceleration : Real init: 5.0
+        min_speed : Real init:1.0
+        previous_error : Real init:0.0
+        error0:Real init:0.0
+        error1:Real init:0.0
+        error2:Real init:0.0
+     operations
+
+        get_error(target_distance:Real) : Real = 
+          self.robot.get_distance(self.robot.target) - target_distance - self.robot.sensor_accuracy *40 -- ojo, no lo he cambiado
+
+        compute_target_speed(target_distance: Real, dt: Real):Real 
+        begin
+            declare error:Real, proportional: Real, derivative:Real, integral:Real;
+            error := self.get_error(target_distance);
+            self.error2 := self.error1;
+            self.error1 := self.error0;
+            self.error0 := error;
+            proportional := error;
+            derivative := (error - self.error1) / dt;
+            integral := (error + self.error1 + self.error2) * dt;
+            -- # speed = self.speed + self.A0 * self.error[0] + self.A1 * self.error[1] + self.A2 * self.error[2]
+            result:=self.Kp * proportional + self.Ki * integral + self.Kd * derivative;
+        end
+
+        move_robot(target:Mobile, target_distance: Real, dt:Real) 
+        begin
+            declare error:Real, delta_speed:Real, 
+                    proportional : Real, derivative:Real, speed:Real, signe:Real;
+            speed:=self.compute_target_speed(target_distance, dt);
+            speed := self.robot.max_speed.min(speed);
+            speed := speed.max(self.min_speed);
+            delta_speed := speed-self.speed;
+            if (delta_speed <> 0.0) then 
+                signe := delta_speed/delta_speed.abs();
+                self.speed := if delta_speed.abs() < self.max_acceleration*dt then speed else self.speed + signe * self.max_acceleration*dt endif;
+            end;
+            self.robot.move(self.speed, dt);
+            -- CHECK THIS
+            self.robot_estimated_position := self.robot_estimated_position + (self.speed * dt);
+            --# print('Estimated position='+str(self.robot_estimated_position))
+            -- WriteLine(self.robot.name+': Estimated position='+self.robot_estimated_position.toString());
+        end;
+    end -- class RobustRobotController
+
+class ProbabilisticRobotController < Controller
+
+    attributes 
+        robot_estimated_position : Real init : 0.0 -- UReal(0.0,0.5)
+        speed : Real init: 0.0
+        max_acceleration : Real init: 5.0
+        min_speed : Real init:1.0
+        previous_error : Real init:0.0
+        error0:Real init:0.0
+        error1:Real init:0.0
+        error2:Real init:0.0
+        confidence : Real init: 0.9999
+
+     operations
+
+    tolerance(confidence:Real):Real = -- returns the factor that ensures that a 
+         if confidence = 1.0 then  5.0 -- robust control system
+         else if confidence>=0.99999 then 4.41 
+         else if confidence>=0.9999 then 3.89 
+         else if confidence >=0.999 then 3.29
+         else if confidence >=0.99  then 2.67 
+         else if confidence >=0.98  then 2.327 
+         else if confidence >=0.95  then 2.0
+         else if confidence >=0.9   then 1.65
+         else  if confidence >=0.8  then 1.282
+         else if confidence >= 0.5 then 1.0
+         else 0.0               -- base case, for crisp systemscrisp system 
+         endif endif endif endif endif endif endif endif endif endif
+
+        get_error(target_distance:Real) : Real = 
+          let distance:Real = self.robot.get_distance(self.robot.target) in 
+             distance - target_distance - distance* self.robot.sensor_accuracy * tolerance(self.confidence) -- cambiar si distance*
+--           distance - target_distance - self.robot.sensor_accuracy * tolerance(self.confidence) -- ojo, cambio 3 -- cambiar si NO distance*
+
+        compute_target_speed(target_distance: Real, dt: Real):Real 
+        begin
+            declare error:Real, proportional: Real, derivative:Real, integral:Real;
+            error := self.get_error(target_distance);
+            self.error2 := self.error1;
+            self.error1 := self.error0;
+            self.error0 := error;
+            proportional := error;
+            derivative := (error - self.error1) / dt;
+            integral := (error + self.error1 + self.error2) * dt;
+            -- # speed = self.speed + self.A0 * self.error[0] + self.A1 * self.error[1] + self.A2 * self.error[2]
+            result:=self.Kp * proportional + self.Ki * integral + self.Kd * derivative;
+        end
+
+        move_robot(target:Mobile, target_distance: Real, dt:Real) 
+        begin
+            declare delta_speed:Real, speed:Real, signe:Real;
+            speed:=self.compute_target_speed(target_distance, dt);
+            speed := self.robot.max_speed.min(speed);
+            speed := speed.max(self.min_speed);
+            delta_speed := speed-self.speed;
+            if (delta_speed <> 0.0) then 
+                signe := delta_speed/delta_speed.abs();
+                self.speed := if delta_speed.abs() < self.max_acceleration*dt then speed else self.speed + signe * self.max_acceleration*dt endif;
+            end;
+            self.robot.move(self.speed, dt);
+            -- CHECK THIS
+            self.robot_estimated_position := self.robot_estimated_position + (self.speed * dt);
+            --# print('Estimated position='+str(self.robot_estimated_position))
+            -- WriteLine(self.robot.name+': Estimated position='+self.robot_estimated_position.toString());
+        end
+
+    end -- class ProbabilisticRobotController
+
+
+class UncertainRobotController < Controller
+    attributes 
+        robot_estimated_position : UReal init: UReal(0.0, 0.01) -- Real init : 0.0 
+        speed : UReal init: UReal(0.0, 0.01) --self.speed_sensor_accuracy) -- Real init: 0.0
+        max_acceleration : UReal init: UReal(5.0, 0.01) --self.speed_sensor_accuracy) -- Real init: 5.0
+        min_speed : UReal init: UReal(1.0, 0.01) --self.speed_sensor_accuracy) -- Real init: 1.0
+        previous_error : UReal init: UReal(0.0, 0.01) -- self.sensor_accuracy) -- Real init : 0.0
+        error0:UReal init: UReal(0.0, 0.01) -- self.sensor_accuracy) -- Real init : 0.0
+        error1:UReal init: UReal(0.0, 0.01) --, self.sensor_accuracy) -- Real init : 0.0
+        error2:UReal init: UReal(0.0, 0.01) --, self.sensor_accuracy) -- Real init : 0.0
+        confidence : Real init: 0.9999
+     operations
+
+    tolerance(confidence:Real):Real = -- returns the factor that ensures that a 
+         if confidence = 1.0 then  5.0 -- robust control system
+         else if confidence>=0.99999 then 4.41 
+         else if confidence>=0.9999 then 3.89 
+         else if confidence >=0.999 then 3.29
+         else if confidence >=0.99  then 2.67 
+         else if confidence >=0.98  then 2.327 
+         else if confidence >=0.95  then 2.0
+         else if confidence >=0.9   then 1.65
+         else  if confidence >=0.8  then 1.282
+         else if confidence >= 0.5 then 1.0
+         else 0.0               -- base case, for crisp systemscrisp system 
+         endif endif endif endif endif endif endif endif endif endif
+
+        get_error(target_distance:UReal) : UReal = 
+          let distance:Real = self.robot.get_distance(self.robot.target) in 
+            UReal(distance,distance*self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - distance*self.robot.sensor_accuracy*tolerance(self.confidence) -- cambiar si distance*
+          -- UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - self.robot.sensor_accuracy*tolerance(self.confidence) -- ojo: cambio 3! -- cambiar si NO distance*
+               -- UReal(distance,distance*self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - distance*self.robot.sensor_accuracy
+               -- UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance -- ojo: cambio 3!
+               -- UReal(distance,self.robot.sensor_accuracy) - target_distance
+
+        compute_target_speed(target_distance: UReal, dt: Real):UReal 
+        begin
+            declare error:UReal, proportional: UReal, derivative:UReal, integral:UReal;
+            error := self.get_error(target_distance);
+            self.error2 := self.error1;
+            self.error1 := self.error0;
+            self.error0 := error;
+            proportional := error;
+            derivative := (error - self.error1) / dt;
+            integral := (error + self.error1 + self.error2) * dt;
+            -- # speed = self.speed + self.A0 * self.error[0] + self.A1 * self.error[1] + self.A2 * self.error[2]
+            result:=self.Kp * proportional + self.Ki * integral + self.Kd * derivative;
+        end
+
+        move_robot(target:Mobile, target_distance: UReal, dt:Real) 
+        begin
+            declare delta_speed:UReal, speed:UReal, signe:Real;
+
+            speed := self.compute_target_speed(target_distance, dt);
+
+            speed := if (self.robot.max_speed<=speed).confidence()>=0.95 then self.robot.max_speed else speed endif; -- self.robot.max_speed.min(speed);
+            speed := if (speed<self.min_speed).confidence()>=0.95 then self.min_speed else speed endif; --speed.max(1.0);
+            delta_speed := speed-self.speed;
+            if ((delta_speed <> UReal(0.0,self.robot.speed_sensor_accuracy)).confidence()>=0.95) then 
+                signe := if ((delta_speed >= UReal(0.0,self.robot.speed_sensor_accuracy)).confidence()>=0.95) then 1.0 else -1.0 endif;
+                self.speed := if ((delta_speed.abs() <= self.max_acceleration*dt).confidence()>=0.95) then speed else self.speed + signe * self.max_acceleration*dt endif;
+            end;
+            self.robot.move(self.speed.value(), dt);
+            -- CHECK THIS
+            self.robot_estimated_position := self.robot_estimated_position + (self.speed * dt);
+            --# print('Estimated position='+str(self.robot_estimated_position))
+            -- WriteLine(self.robot.name+': Estimated position='+self.robot_estimated_position.toString());
+            -- WriteLine(self.robot.name+': Speed='+self.speed.toString());
+        end;
+
+    end -- class UncertainRobotController
+
+association Control between 
+    Controller [1] role controller 
+    Robot [1] role robot
+end
+
+association Chase between 
+    Robot [*] role robot 
+    Mobile [1] role target
+end
+
+class System 
+
+operations
+    move(target:Mobile, dt:Real)
+      begin
+        target.move(2.0,dt); -- speed, time
+
+        for c in BasicRobotController.allInstances() do
+            c.move_robot(target,5.0,dt);
+            c.robot.update_distance(target);
+        end;
+        for c in RobustRobotController.allInstances() do
+            c.move_robot(target,5.0,dt);
+            c.robot.update_distance(target);
+        end;
+        for c in ProbabilisticRobotController.allInstances() do
+            c.move_robot(target,5.0,dt);
+            c.robot.update_distance(target);
+        end;
+        for c in UncertainRobotController.allInstances() do
+            c.move_robot(target,5.0,dt);
+            c.robot.update_distance(target);
+        end;
+      end
+
+    run(target:Mobile,dt:Real,n:Integer)
+      begin
+        for i in Sequence{1..n} do
+            -- WriteLine(i.toString());
+            self.move(target,dt)
+        end;
+        self.status();
+      end 
+    status()
+      begin
+        WriteLine('--------');
+        for c in BasicRobotController.allInstances() do
+            WriteLine(c.robot.name+' distance to target, Mean='+c.robot.get_average_distance().toString()+' Min='+c.robot.get_min_distance().toString());
+        end;
+        for c in RobustRobotController.allInstances() do
+            WriteLine(c.robot.name+' distance to target, Mean='+c.robot.get_average_distance().toString()+' Min='+c.robot.get_min_distance().toString());
+        end;
+        for c in ProbabilisticRobotController.allInstances() do
+             WriteLine(c.robot.name+' distance to target, Mean='+c.robot.get_average_distance().toString()+' Min='+c.robot.get_min_distance().toString());
+        end;
+        for c in UncertainRobotController.allInstances() do
+            WriteLine(c.robot.name+' distance to target, Mean='+c.robot.get_average_distance().toString()+' Min='+c.robot.get_min_distance().toString());
+        end;
+--        for c in Controller.allInstances() do
+--            WriteLine(c.robot.name+' distance to target, Mean='+c.robot.get_average_distance().toString()+' Min='+c.robot.get_min_distance().toString());
+--        end;
+      end 
+end -- class System

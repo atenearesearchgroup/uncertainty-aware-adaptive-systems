@@ -1,0 +1,115 @@
+reset
+!new Mobile('t')
+!t.name:='target'
+!t._position:=10.0
+!t.sensor_accuracy := 0.1 -- precision
+
+
+!new Robot('br')
+!br.sensor_accuracy := 0.1 -- precision
+!br.name:='BasicRobot'
+!insert(br,t) into Chase
+
+!new Robot('rr')
+!rr.sensor_accuracy := 0.1 -- precision
+!rr.name:='RobustRobot'
+!insert(rr,t) into Chase
+
+!new Robot('pr9999')
+!pr9999.sensor_accuracy := 0.1 -- precision
+!pr9999.name:='ProbRobot9999'
+!insert(pr9999,t) into Chase
+
+!new Robot('pr999')
+!pr999.sensor_accuracy := 0.1 -- precision
+!pr999.name:='ProbRobot999'
+!insert(pr999,t) into Chase
+
+!new Robot('pr99')
+!pr99.sensor_accuracy := 0.1 -- precision
+!pr99.name:='ProbRobot99'
+!insert(pr99,t) into Chase
+
+!new Robot('pr95')
+!pr95.sensor_accuracy := 0.1 -- precision
+!pr95.name:='ProbRobot95'
+!insert(pr95,t) into Chase
+
+!new Robot('ur9999')
+!ur9999.sensor_accuracy := 0.1 -- precision
+!ur9999.name:='URobot9999'
+!insert(ur9999,t) into Chase
+
+!new Robot('ur999')
+!ur999.sensor_accuracy := 0.1 -- precision
+!ur999.name:='URobot999'
+!insert(ur999,t) into Chase
+
+!new Robot('ur99')
+!ur99.sensor_accuracy := 0.1 -- precision
+!ur99.name:='URobot99'
+!insert(ur99,t) into Chase
+
+!new Robot('ur95')
+!ur95.sensor_accuracy := 0.1 -- precision
+!ur95.name:='URobot95'
+!insert(ur95,t) into Chase
+
+!new Robot('ur')
+!ur.sensor_accuracy := 0.1 -- precision
+!ur.name:='URobot'
+!insert(ur,t) into Chase
+
+
+
+--!new Robot('ur')
+-- !ur.name:='UncertRobot'
+--!insert(ur,t) into Chase
+
+
+!new BasicRobotController('bc')
+!insert(bc,br) into Control
+!new RobustRobotController('rc')
+!insert(rc,rr) into Control
+!new ProbabilisticRobotController('pc9999')
+!pc9999.confidence:=0.9999
+!insert(pc9999,pr9999) into Control
+
+!new ProbabilisticRobotController('pc999')
+!pc999.confidence:=0.999
+!insert(pc999,pr999) into Control
+
+!new ProbabilisticRobotController('pc99')
+!pc99.confidence:=0.99
+!insert(pc99,pr99) into Control
+
+!new ProbabilisticRobotController('pc95')
+!pc95.confidence:=0.95
+!insert(pc95,pr95) into Control
+
+!new UncertainRobotController('uc9999')
+!uc9999.confidence:=0.9999
+!insert(uc9999,ur9999) into Control
+
+!new UncertainRobotController('uc999')
+!uc999.confidence:=0.999
+!insert(uc999,ur999) into Control
+
+!new UncertainRobotController('uc99')
+!uc99.confidence:=0.99
+!insert(uc99,ur99) into Control
+
+!new UncertainRobotController('uc95')
+!uc95.confidence:=0.95
+!insert(uc95,ur95) into Control
+
+!new UncertainRobotController('uc')
+!uc.confidence:=0.68
+!insert(uc,ur) into Control
+
+
+?(-1).srand() -- seed
+
+!new System('s')
+-- !s.move(t,1)     -- target, time
+!s.run(t,1,200)  -- target, time, num iterations
