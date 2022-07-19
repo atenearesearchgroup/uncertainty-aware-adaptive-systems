@@ -1,0 +1,9 @@
+reset
+!new Test('t')
+-- !t.init(10,30,0.95)
+-- duration (#ticks) of each execution, number of points to generate, period, robustness
+!t.run(2000,10,Sequence{30,20,18},Sequence{1.0,0.9999,0.999,0.99,0.98,0.95}) 
+
+
+
+

@@ -1,0 +1,630 @@
+model ZNN
+
+-- UNCERTAIN VERSION, USING UREAL AND UBOOLEAN VALUES
+
+/* 
+Znn.com is a simple news service that uses MAPE-K through different tactics [1,2]. 
+Znn.com has several Servers, some of which are inactive, a Dispatcher (load balancer) 
+in charge of receiving requests from Clients  and selecting the active server that will 
+process them. The system monitors the Dispatcher and the Servers to make decisions. 
+One typical example is the invariant stating that the current system response time r for any request should 
+always be below some threshold Rmax.
+
+[1] J. Cámara et al. "The Uncertainty Interaction Problem in Self-Adaptive Systems". To appear in Sosym, 2022.
+[2] Bradley R. Schmerl, Javier Cámara,  Jeffrey Gennari, David Garlan, Paulo Casanova, Gabriel A. Moreno, 
+    Thomas J. Glazier and Jeffrey M. Barnes. "Architecture-based self-protection: composing and reasoning about
+    denial-of-service mitigations." In Proc. of {HotSoS} 2014, ACM, 2014.
+
+*/
+
+class Clock
+  attributes
+    real_NOW : Real init: 0.0 -- interal time, in POSIX format -- ground truth
+    _clockUnc : Real init:0.0000001 -- precision of the clock
+  operations
+    init(clockUnc:Real) 
+      begin 
+        self.real_NOW := 0.0;
+        self._clockUnc:=clockUnc;
+      end 
+    tick()
+      begin
+        declare moreOrLessNOW:Real; -- ground truth value 
+        moreOrLessNOW:=self.real_NOW + 1.0*((1.0).normalDistr(self._clockUnc)); -- God plays dice here... :-)
+        self.real_NOW:=self.real_NOW + 1.0;
+        for o in self.ao do
+            -- o.action(self.real_NOW)  -- exact clock
+            o.action(UReal(moreOrLessNOW,self._clockUnc))     -- realistic clock, i.e., imprecise.
+        end
+     end
+    run(n:Integer) -- ticks "n" times
+      begin
+        for o in Sequence{1..n} do
+            self.tick()
+        end
+      end
+end -- class Clock
+
+abstract class ActiveObject 
+  operations
+    action(time:UReal) begin end
+end
+
+aggregation Time between
+  Clock [1]
+  ActiveObject [*] role ao 
+end
+
+class Request
+  attributes
+    client:Client                 -- originating client
+    requestId:Integer             -- identifier assigned by the server to track the requests
+    arrivalTime:UReal              -- when it reaches the server and is accepted
+    processingTime:UReal           -- expected processing time of the request 
+    real_processingTime:Real       -- real processing time (ground truth)
+    startTime:UReal                -- time when the request starts being processed
+    expectedFinishTime:UReal       derive: self.startTime + self.processingTime
+    real_expectedFinishTime:Real   derive: self.startTime.value() + self.real_processingTime -- ground truth
+    actualFinishTime:UReal         -- to be stamped by the server when it is remived from the list of pending requests
+    responseTime:UReal             derive: self.actualFinishTime - self.arrivalTime
+  operations
+    toString():String = ' id:'+self.requestId.toString()+
+                        ' at:'+self.arrivalTime.toString()+
+                        ' st:'+self.startTime.toString()+
+                        ' pt:'+self.processingTime.toString()+
+                        ' r_pt:'+self.real_processingTime.toString()+
+                        ' et:'+self.expectedFinishTime.toString()+
+                        ' r_et:'+self.real_expectedFinishTime.toString()+
+                        ' ft:'+self.actualFinishTime.toString()+
+                        ' rt:'+self.responseTime.toString()
+end -- class Request
+
+class Client < ActiveObject
+  attributes
+    -- parameters
+    period : Real init:20.0                 -- time between issuing requests
+    requestProcessingTime : Real init: 20.0 -- processing Time of requests issued by this client. it is a crisp value
+    -- counters
+    lastTime : UReal init: UReal(0.0,0.1) -- last time the client issued a request
+    issuedRequests: Integer init:0 -- counter of the requests issued
+    deniedRequests: Integer init:0 -- how many of them were denied (no available server)
+  operations
+    init(startTime:UReal,period:Real,requestProcessingTime:Real) 
+      begin
+        self.lastTime:=startTime; -- to allow clients to start at differt times
+        self.issuedRequests:=0;
+        self.deniedRequests:=0;
+        self.period:=period;
+        self.requestProcessingTime:=requestProcessingTime;
+      end 
+    action(time:UReal)
+      begin
+        declare accepted:Boolean; -- to record the response by the dispatcher
+
+        if (time >= self.lastTime + self.period).confidence()>=self.config.robustness then 
+          self.lastTime:=time;
+          accepted:=self.dispatcher.processRequest(self,self.requestProcessingTime);
+          self.issuedRequests:=self.issuedRequests+1;
+          if not accepted then
+            self.deniedRequests:=self.deniedRequests+1;
+--            WriteLine('Warning: Request not accepted by the dispatcher!');
+          end
+        end
+      end  
+
+end -- class Client
+
+class Dispatcher < ActiveObject
+attributes
+    -- parameters
+    RMax : UReal init:UReal(62.0,0.0000001)  -- MaxResponseTime threshold per request
+    _processingTimeUnc : Real derive: self.servers->collect(_processingTimeUnc)->min()
+    -- counters
+    numLostRequests:Integer init:0
+    totalIssuedRequests: Integer init:0
+    -- derived system performance indicators
+    maxResponseTime:UReal derive: self.servers->collect(maxResponseTime)->max()
+    numProcessedRequests:Integer derive: self.servers->collect(numProcessedRequests)->sum()
+    numOverdueRequests:Integer derive: self.servers->collect(numOverdueRequests)->sum()
+    numRejectedRequests:Integer derive: self.servers->collect(numRejectedRequests)->sum()
+    numRequestsInProcess:Integer derive: self.servers->collect(backlog)->sum()
+    avgResponseTime:UReal derive: (self.servers->collect(sumResponseTime)->sum())/(self.numProcessedRequests+self.numOverdueRequests)
+    totalConsumedEnergy :UReal derive: self.servers->collect(totalConsumedEnergy)->sum()
+
+operations
+    init(RMax:UReal) -- initializes parameters and counters
+      begin
+        self.RMax:=RMax;
+        self.numLostRequests:=0;
+        self.totalIssuedRequests:=0;
+      end 
+    
+    processRequest(c:Client,processingTime:Real):Boolean -- process a requests. Returns false if no server can accept it.
+      begin
+        declare done:Boolean, server:Server;
+            done:=false;
+            -- First, we try with the active servers 
+            for s in self.servers->select(s|s.active)->asSequence()->sortedBy(s|s.backlog) do
+                if not done then 
+                    done:=s.processRequest(c,processingTime,self.RMax);
+                end
+            end;
+            -- If not done, we try with the  servers currently starting 
+            if not done then 
+              for s in self.servers->select(s|s.starting)->asSequence()->sortedBy(s|s.backlog) do
+                if not done then 
+                    done:=s.processRequest(c,processingTime,self.RMax);
+                end
+              end
+            end;
+            -- Finally, if not yet done, we need to start a new server, if possible
+            if not done then -- we look for an inactive server
+              server:=self.servers->select(s|not s.starting and not s.active)->any(true);
+              if server<>null then 
+                server.start();
+                done:=server.processRequest(c,processingTime,self.RMax);
+              end;
+            end;
+            if not done then self.numLostRequests:=self.numLostRequests+1 
+            else self.totalIssuedRequests:=self.totalIssuedRequests+1;
+            end;
+            result:=done;
+      end
+    action(time:UReal) --monitors the state of the servers
+        begin
+          -- nothing to do in this version...
+        end
+    toString() : String = 
+               '\n _processingTimeUnc    = '+self._processingTimeUnc.toString()+'\n'+
+               ' RMax                 = '+self.RMax.toString()+'\n'+
+               ' maxResponseTime      = '+self.maxResponseTime.toString()+'\n'+
+               ' avgResponseTime      = '+self.avgResponseTime.toString()+'\n'+
+               ' totalIssuedRequests  = '+self.totalIssuedRequests.toString()+'\n'+
+               ' numLostRequests      = '+self.numLostRequests.toString()+'\n'+
+               ' numProcessedRequests = '+self.numProcessedRequests.toString()+'\n'+
+               ' numOverdueRequests   = '+self.numOverdueRequests.toString()+'\n'+
+               ' numRejectedRequests  = '+self.numRejectedRequests.toString()+'\n'+
+               ' numRequestsInProcess = '+self.numRequestsInProcess.toString()+'\n'+
+               ' totalConsumedEnergy  = '+self.totalConsumedEnergy.toString()+'\n'
+    toStringNumbers() : String = 
+              self._processingTimeUnc.toString()+'; '+
+              self.RMax.value().toString()+'; '+
+              self.maxResponseTime.value().toString()+'; '+
+              self.avgResponseTime.value().toString()+'; '+
+              self.totalIssuedRequests.toString()+'; '+
+              self.numLostRequests.toString()+'; '+
+              self.numProcessedRequests.toString()+'; '+
+              self.numOverdueRequests.toString()+'; '+
+              self.numRejectedRequests.toString()+'; '+
+              self.numRequestsInProcess.toString()+'; '+
+              self.totalConsumedEnergy.value().toString()+'; '+
+              (self.numLostRequests/self.totalIssuedRequests).toString()+'; '+
+              (self.numOverdueRequests/self.totalIssuedRequests).toString()+'; '+
+              (self.totalConsumedEnergy.value()/(self.totalIssuedRequests-self.numLostRequests)).toString()
+
+
+end -- class Dispatcher
+
+class Config 
+  attributes 
+    -- time
+    _clockUnc : Real init: 0.0000001 -- precision of the clock
+    _timeUnc : Real init: 0.0000001 -- precision of temporal estimations
+    -- response
+    RMax : UReal init:UReal(62.0,self._timeUnc)  -- MaxResponseTime threshold per request
+    _processingTimeUnc : Real init: 1.0 -- precision of the estimations of processing times.
+    robustness : Real init : 0.99 -- level of robustness (1.0,0.999, 0.99, 0.98, 0.95, ...)
+    -- client
+    clientPeriod : Real init: 10    -- time between two requests of a client
+    requestProcessingTime : Real init: 20.0 -- UReal(20,self._processingTimeUnc)   -- expected processing time
+    -- server parameters
+    swapTime:Real init:0.1 -- time units needed between finishing one request and starting the next one 
+    startLatency:Integer init: 5 -- time units needed for the server to activate after start
+    idleLatency:Integer init: 20 -- time units needed for the server to shutdown if no requests are received
+    activeConsumption:UReal init:UReal(10.0,0.1) -- per time unit
+    idleConsumption:UReal init:UReal(1.0,0.1)   -- per time unit
+    downConsumption:UReal init:UReal(0.01,0.1)   -- per time unit
+
+end 
+
+class Server < ActiveObject
+  attributes
+    -- parameters
+    name : String
+    -- derived configuration parameters
+    _processingTimeUnc : Real derive: self.config._processingTimeUnc -- imprecision of the server processing time
+                                      -- * self.tolerance(config.robustness)
+    swapTime:Real derive:self.config.swapTime -- time units needed between finishing one request and starting the next one 
+    startLatency:Integer derive:self.config.startLatency -- time units needed for the server to activate after start
+    idleLatency:Integer derive:self.config.idleLatency -- time units needed for the server to shutdown if no requests are received
+    activeConsumption:UReal derive:self.config.activeConsumption -- per time unit
+    idleConsumption:UReal derive:self.config.idleConsumption   -- per time unit
+    downConsumption:UReal derive:self.config.downConsumption   -- per time unit
+    -- counters
+    NOW:UReal -- local time -- estimated. It is given in function "tick()"
+    nextTimeFree:UReal init:UReal(0.0,0.1)
+    nextRequestId:Integer init:1
+    numProcessedRequests:Integer init:0 
+    -- counters for performance indicators
+    maxResponseTime:UReal init: 0.0
+    sumResponseTime:UReal init: 0.0
+    avgResponseTime:UReal init: 0.0
+    numReceivedRequests:Integer init:0
+    numRejectedRequests:Integer init:0
+    numOverdueRequests:Integer init:0
+    totalProcessingTime:UReal init: 0.0
+    -- counters for energy consumption
+    totalConsumedEnergy:UReal init:0.0 --UReal(0.0,0.01)
+    avgEnergyConsumption:UReal init:0.0 --UReal(0.0,0.01)
+    -- counters for state variables
+    active:Boolean init:false 
+    starting:Boolean init:false
+    timeToStart:Integer init:0 -- countdown: number of time units to activate
+    timeToStop:Integer init:0 
+    timeIdle : Real init: 0.0
+    timeActive : Real init: 0.0
+    timeStarting : Real init: 0.0
+    timeInactive : Real init: 0.0
+    -- derived counters
+    backlog:Integer derive: self.pendingRequests->size()
+    avgProcessingTime:UReal derive: if self.numProcessedRequests=0 then 0 else self.totalProcessingTime/self.numProcessedRequests endif
+    idle:Boolean derive: self.backlog=0
+  
+
+  operations
+    init(name:String) -- initializes parameters and counters
+      begin
+        declare r:Request;
+        -- initializes parameters
+        self.name:=name;
+        -- initializes counters
+        self.nextTimeFree:=0.0;
+        self.nextRequestId:=1;
+        self.numProcessedRequests:=0; 
+        self.maxResponseTime:= 0.0;
+        self.sumResponseTime:= 0.0;
+        self.avgResponseTime:= 0.0;
+        self.numReceivedRequests:=0;
+        self.numRejectedRequests:=0;
+        self.numOverdueRequests:=0;
+        self.totalProcessingTime:=0.0;
+        self.active:=false; 
+        self.starting:=false;
+        self.timeToStart:=0; -- countdown: number of time units to activate
+        self.timeToStop:=0; 
+        self.timeIdle := 0.0;
+        self.timeActive := 0.0;
+        self.timeStarting := 0.0;
+        self.timeInactive := 0.0;
+        self.totalConsumedEnergy:=0.0; --UReal(0.0,0.01)
+        self.avgEnergyConsumption:=0.0; --UReal(0.0,0.01)
+
+        -- remove possible pending requests from previous executions
+        while self.pendingRequests->size()>0 do
+          r:=self.pendingRequests->any(true);
+          delete(self,r) from PendingRequests;
+          destroy(r);
+        end;
+
+      end 
+
+    tolerance(robustness:Real):Real = 1.0
+/* -- AV
+         if robustness = 1.0 then 6.0 -- robust control system
+         else if robustness>=0.9999 then 4.0 
+         else if robustness >=0.999 then 3.3
+         else if robustness >=0.99  then 2.6 
+         else if robustness >=0.98  then 2.327 
+         else if robustness >=0.95  then 2.0
+         else if robustness >=0.9   then 1.65
+         else  if robustness >=0.8  then 1.282
+         else if robustness >= 0.5 then 1.0
+         else 1.0               -- base case, for crisp systemscrisp system 
+         endif endif endif endif endif endif endif endif endif
+         *0.5 -- AV
+*/
+
+    fits(r:Request):Boolean = 
+      ((r.expectedFinishTime - r.arrivalTime + self.swapTime) < self.config.RMax).confidence() >= self.config.robustness
+
+    hasFinished(r:Request,now:UReal):Boolean = 
+     (now>=r.real_expectedFinishTime).confidence()>=self.config.robustness 
+     
+    isOverdue(r:Request):Boolean = (r.responseTime>self.config.RMax).confidence()>=self.config.robustness
+    
+
+    processRequest(c:Client,pt:Real,RMax:UReal):Boolean
+      begin
+        declare request:Request, -- the server creates a request instance 
+                processingTime:UReal; -- Cast of the parameter as UReal
+        processingTime:=UReal(pt,self._processingTimeUnc); 
+        self.numReceivedRequests:=self.numReceivedRequests+1;
+        --processingTime:=UReal(pt,self._processingTimeUnc);
+        if (not self.active) and (not self.starting) then -- no requests taken if not active or starting
+            self.numRejectedRequests:=self.numRejectedRequests+1;
+            result:=false; 
+        else 
+            request:=new Request();
+            request.client:=c;
+            request.requestId:=self.nextRequestId;
+            request.arrivalTime:=self.NOW;
+            request.startTime:=if (self.NOW >= self.nextTimeFree).confidence()>=self.config.robustness then self.NOW else self.nextTimeFree endif;
+            request.processingTime:=if self.starting then processingTime + self.startLatency else processingTime endif;
+            request.real_processingTime:= request.processingTime.value() + (0.0).normalDistr(self.config._processingTimeUnc);
+            -- request.expectedFinishTime and real_expectedFinishTime are derived values, automatically uptated:
+            -- expectedFinishTime:UReal derive: self.startTime + self.processingTime
+            -- real_expectedfinishTime:Real derive: self.startTime + self.real_processingTime
+            if self.fits(request) then -- register the request in the queue
+              self.nextRequestId:=self.nextRequestId+1;
+              self.nextTimeFree:=request.real_expectedFinishTime+self.swapTime;
+              insert(self,request) into PendingRequests;
+              -- WriteLine('in  at:'+self.NOW.toString()+', '+request.toString());
+              result:=true;
+            else -- cannot make it!
+              self.numRejectedRequests:=self.numRejectedRequests+1;
+              destroy(request);
+              result:=false;
+            end
+        end
+      end 
+    start()
+      begin
+        self.starting:=true;
+        self.active:=false;
+        self.timeToStart:=self.startLatency;
+      end 
+    stop()
+      begin
+        self.active:=false;
+        self.starting:=false;
+        self.timeToStop:=0;
+      end 
+    action(time:UReal)
+      begin
+        self.NOW:=time;
+        -- processes the queue of pending requests
+        for r in self.pendingRequests do
+          if self.hasFinished(r,self.NOW) then -- the request has been processed
+                r.actualFinishTime:=self.NOW; -- updates the actual finish time
+                -- updates the server stats
+                if self.isOverdue(r) then
+--                  WriteLine('Request overdue: '+r.toString());
+                  self.numOverdueRequests:=self.numOverdueRequests+1; 
+                  self.numProcessedRequests:=self.numProcessedRequests-1; -- to be incremented below
+                  -- ReadLine();
+                end;
+                self.numProcessedRequests:=self.numProcessedRequests+1;
+                self.totalProcessingTime:=self.totalProcessingTime+ r.real_processingTime;
+                self.maxResponseTime:=if (self.maxResponseTime<r.responseTime).confidence()>=0.98 then r.responseTime else self.maxResponseTime endif;
+                self.sumResponseTime:=self.sumResponseTime+r.responseTime;
+                -- finally, either insert the request into the done ones, or destroys the request after printing it
+                -- insert(self,r) into DoneRequests;
+                -- WriteLine('out at:'+self.NOW.toString()+', '+r.toString());
+                delete(self,r) from PendingRequests; 
+                destroy(r);
+          end
+        end;
+        -- computes the times spent
+        if self.starting then self.timeStarting:= self.timeStarting + 1; end;
+        if self.active and self.idle then self.timeIdle:= self.timeIdle + 1; end;
+        if self.active then self.timeActive:= self.timeActive + 1; end;
+        if not self.active and not self.starting then self.timeInactive:= self.timeInactive + 1; end;
+        -- EnergyConsumption
+        self.totalConsumedEnergy:= self.totalConsumedEnergy + 
+            if self.starting then self.activeConsumption 
+            else if self.active then 
+                   if self.idle then self.idleConsumption
+                   else self.activeConsumption 
+                   endif
+                 else self.downConsumption
+                 endif
+            endif;
+        self.avgEnergyConsumption:=self.totalConsumedEnergy/time;
+        -- when starting, it checks whether it should become active
+        if self.starting then 
+            if self.timeToStart=0 then 
+                self.starting:=false;
+                self.active:=true;
+                self.numProcessedRequests:=0;
+                self.totalProcessingTime:=0.0;
+                self.timeToStop:=0;
+            else 
+                self.timeToStart:=self.timeToStart-1;
+            end
+        end;
+        -- Finally, it checks whether it should shut down for being idle for a while
+        if self.active and self.idle then
+          if self.timeToStop=self.idleLatency then 
+            self.stop();
+          else 
+            self.timeToStop:=self.timeToStop + 1;
+          end
+        else
+          self.timeToStop:=0;
+        end;
+      end
+
+end -- class Server 
+
+aggregation PendingRequests between 
+  Server [0..1] role server
+  Request [*] role pendingRequests ordered
+end
+
+-- aggregation DoneRequests between 
+--  Server [0..1] role doneServer
+--  Request [*] role doneRequests ordered
+--end
+
+
+association Requests between
+    Client [*] role clients
+    Dispatcher [1] role dispatcher
+end 
+
+association Work between
+    Dispatcher [1] role dispatcher
+    Server [*] role servers
+end 
+
+class Test
+operations
+  init(points:Integer,period:Real,robustness:Real) 
+  begin 
+    declare c:Clock, d:Dispatcher, c1:Client, c2:Client, c3:Client, c4:Client, s1:Server,s2:Server,s3:Server,s4:Server,conf:Config;
+      c:=new Clock();
+      d:=new Dispatcher();
+      insert (c,d) into Time;
+      c1:=new Client();
+      c2:=new Client();
+      c3:=new Client();
+      c4:=new Client();
+      insert (c,c1) into Time;
+      insert (c,c2) into Time;
+      insert (c,c3) into Time;
+      insert (c,c4) into Time;
+      insert(c1,d) into Requests;
+      insert(c2,d) into Requests;
+      insert(c3,d) into Requests;
+      insert(c4,d) into Requests;
+      s1:=new Server();
+      insert (c,s1) into Time;
+      s2:=new Server();
+      insert (c,s2) into Time;
+      s3:=new Server();
+      insert (c,s3) into Time;
+      s4:=new Server();
+      insert (c,s4) into Time;
+      insert(d,s1) into Work;
+      insert(d,s2) into Work;
+      insert(d,s3) into Work;
+      insert(d,s4) into Work;
+      conf:=new Config('conf');
+      insert(c,conf) into ClockConfig;
+      insert(d,conf) into DispatcherConfig;
+      insert(s1,conf) into ServerConfig;
+      insert(s2,conf) into ServerConfig;
+      insert(s3,conf) into ServerConfig;
+      insert(s4,conf) into ServerConfig;
+      insert(c1,conf) into ClientConfig;
+      insert(c2,conf) into ClientConfig;
+      insert(c3,conf) into ClientConfig;
+      insert(c4,conf) into ClientConfig;
+      WriteLine('Robustness;Period;ProcTimeUnc;RMax;maxResponseTime;avgResponseTime;Issued;Denied;ProcessedOK;Overdue;Rejections;Pending;Energy;%Denied;%Overdue;EnergyPerReq');
+      WriteLine('--- robustness:'+robustness.toString()+', period:'+period.toString());
+      -- set configuration parameters
+      conf._processingTimeUnc:=conf.requestProcessingTime/20.0; -- processing time precision: between 0 and 5% of the request processing time (now = 20.0)
+      conf.clientPeriod:=period;
+      conf.robustness:=robustness;
+      -- init objects
+      c.init(conf._clockUnc);
+      d.init(conf.RMax);
+      c1.init(0.0,conf.clientPeriod,conf.requestProcessingTime); -- start time, period, processing time
+      c2.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+      c3.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+      c4.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+      s1.init('s1');
+      s2.init('s2');
+      s3.init('s3');
+      s4.init('s4');
+       -- (-1).srand(); -- "random" seed for random number generation
+    end
+  
+
+  run(duration:Integer,points:Integer,periods:Sequence(Real),robustness:Sequence(Real))
+  begin
+    declare c:Clock, d:Dispatcher, c1:Client, c2:Client, c3:Client, c4:Client, s1:Server,s2:Server,s3:Server,s4:Server,conf:Config;
+      c:=new Clock();
+      d:=new Dispatcher();
+      insert (c,d) into Time;
+      c1:=new Client();
+      c2:=new Client();
+      c3:=new Client();
+      c4:=new Client();
+      insert (c,c1) into Time;
+      insert (c,c2) into Time;
+      insert (c,c3) into Time;
+      insert (c,c4) into Time;
+      insert(c1,d) into Requests;
+      insert(c2,d) into Requests;
+      insert(c3,d) into Requests;
+      insert(c4,d) into Requests;
+      s1:=new Server();
+      insert (c,s1) into Time;
+      s2:=new Server();
+      insert (c,s2) into Time;
+      s3:=new Server();
+      insert (c,s3) into Time;
+      s4:=new Server();
+      insert (c,s4) into Time;
+      insert(d,s1) into Work;
+      insert(d,s2) into Work;
+      insert(d,s3) into Work;
+      insert(d,s4) into Work;
+      conf:=new Config('conf');
+      insert(c,conf) into ClockConfig;
+      insert(d,conf) into DispatcherConfig;
+      insert(s1,conf) into ServerConfig;
+      insert(s2,conf) into ServerConfig;
+      insert(s3,conf) into ServerConfig;
+      insert(s4,conf) into ServerConfig;
+      insert(c1,conf) into ClientConfig;
+      insert(c2,conf) into ClientConfig;
+      insert(c3,conf) into ClientConfig;
+      insert(c4,conf) into ClientConfig;
+--      WriteLine('Robustness;Period;ProcTimeUnc;RMax;maxResponseTime;avgResponseTime;Issued;Denied;ProcessedOK;Overdue;Rejections;Pending;Energy;%Denied;%Overdue;EnergyPerReq');
+      WriteLine('Robustness;Period;ProcTimeUnc;%Denied;%Overdue');
+    for rob in robustness do
+      for p in periods do
+        WriteLine('--- robustness:'+rob.toString()+', periods:'+p.toString());
+        for i in Sequence{0..points} do
+          -- set configuration parameters
+          -- mirar este tema de incertidumbre
+          conf._processingTimeUnc:=(conf.requestProcessingTime*i)/(20.0*points); -- processing time precision: between 0 and 5% of the request processing time (now = 20.0)
+          conf.clientPeriod:=p;
+          conf.robustness:=rob;
+          -- init objects
+          c.init(conf._clockUnc);
+          d.init(conf.RMax);
+          c1.init(0.0,conf.clientPeriod,conf.requestProcessingTime); -- start time, period, processing time
+          c2.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+          c3.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+          c4.init(0.0,conf.clientPeriod,conf.requestProcessingTime);
+          s1.init('s1');
+          s2.init('s2');
+          s3.init('s3');
+          s4.init('s4');
+           -- (-1).srand(); -- "random" seed for random number generation
+          c.run(duration);
+--          Write(rob.toString()+'; '); Write(p.toString()+'; ');WriteLine(d.toStringNumbers());
+            WriteLine(rob.toString()+'; '+p.toString()+'; '+d._processingTimeUnc.toString()+'; '+
+                      (d.numLostRequests/d.totalIssuedRequests).toString()+'; '+
+                      (d.numOverdueRequests/d.totalIssuedRequests).toString());
+
+        end; -- for
+      end;
+    end
+  end
+end -- class Test
+
+association ClockConfig between 
+  Clock [1..*] 
+  Config [1]
+end
+
+association ClientConfig between 
+  Client [1..*] 
+  Config [1]
+end
+
+association ServerConfig between 
+  Server [1..*] 
+  Config [1]
+end
+
+association DispatcherConfig between 
+  Dispatcher [1] 
+  Config [1]
+end
+
+

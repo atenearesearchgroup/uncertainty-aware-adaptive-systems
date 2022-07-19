@@ -13,7 +13,6 @@ attributes
 operations
     get_position():Real -- returns a blurred value of the current position
         = self._position + (0.0).normalDistr(self.sensor_accuracy)
-        -- = self._position * (1.0).normalDistr(self.sensor_accuracy)
 
     get_real_distance(other:Mobile) : Real 
         = (other._position - self._position).abs()
@@ -21,8 +20,8 @@ operations
     get_distance(other:Mobile) : Real =
     --    = (other.get_position() - self._position).abs()
       let real_distance:Real = self.get_real_distance(other) in
-        real_distance.normalDistr(real_distance* self.sensor_accuracy) -- cambiar si distance*
---        real_distance.normalDistr(self.sensor_accuracy) -- cambio 1 -- -- cambiar si NO distance*
+--        real_distance.normalDistr(real_distance* self.sensor_accuracy) -- cambiar si distance*
+          real_distance.normalDistr(self.sensor_accuracy) -- cambio 1 -- -- cambiar si NO distance*
 --        real_distance + (0.0).normalDistr(self.sensor_accuracy) -- cambio 1 -- funciona igual que el anterior
 
 
@@ -78,7 +77,8 @@ class BasicRobotController < Controller
         error1:Real init:0.0
         error2:Real init:0.0
      operations
-        get_error(target_distance:Real) : Real = self.robot.get_distance(self.robot.target) - target_distance
+        get_error(target_distance:Real) : Real = 
+            self.robot.get_distance(self.robot.target) - target_distance
 
         compute_target_speed(target_distance: Real, dt: Real):Real 
         begin
@@ -131,7 +131,7 @@ class RobustRobotController < Controller
      operations
 
         get_error(target_distance:Real) : Real = 
-          self.robot.get_distance(self.robot.target) - target_distance - self.robot.sensor_accuracy *40 -- ojo, no lo he cambiado
+          self.robot.get_distance(self.robot.target) - target_distance - self.robot.sensor_accuracy *30 -- ojo, no lo he cambiado
 
         compute_target_speed(target_distance: Real, dt: Real):Real 
         begin
@@ -198,8 +198,8 @@ class ProbabilisticRobotController < Controller
 
         get_error(target_distance:Real) : Real = 
           let distance:Real = self.robot.get_distance(self.robot.target) in 
-             distance - target_distance - distance* self.robot.sensor_accuracy * tolerance(self.confidence) -- cambiar si distance*
---           distance - target_distance - self.robot.sensor_accuracy * tolerance(self.confidence) -- ojo, cambio 3 -- cambiar si NO distance*
+--             distance - target_distance - distance* self.robot.sensor_accuracy * tolerance(self.confidence) -- cambiar si distance*
+           distance - target_distance - self.robot.sensor_accuracy * tolerance(self.confidence) -- ojo, cambio 3 -- cambiar si NO distance*
 
         compute_target_speed(target_distance: Real, dt: Real):Real 
         begin
@@ -265,10 +265,11 @@ class UncertainRobotController < Controller
 
         get_error(target_distance:UReal) : UReal = 
           let distance:Real = self.robot.get_distance(self.robot.target) in 
-            UReal(distance,distance*self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - distance*self.robot.sensor_accuracy*tolerance(self.confidence) -- cambiar si distance*
-          -- UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - self.robot.sensor_accuracy*tolerance(self.confidence) -- ojo: cambio 3! -- cambiar si NO distance*
+          -- UReal(distance,distance*self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - distance*self.robot.sensor_accuracy*tolerance(self.confidence) -- cambiar si distance*
+           UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) 
+             - target_distance - self.robot.sensor_accuracy*tolerance(self.confidence) -- ojo: cambio 3! -- cambiar si NO distance*
                -- UReal(distance,distance*self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance - distance*self.robot.sensor_accuracy
-               -- UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance -- ojo: cambio 3!
+          -- UReal(distance,self.robot.sensor_accuracy*tolerance(self.confidence)) - target_distance -- ojo: cambio 3!
                -- UReal(distance,self.robot.sensor_accuracy) - target_distance
 
         compute_target_speed(target_distance: UReal, dt: Real):UReal 

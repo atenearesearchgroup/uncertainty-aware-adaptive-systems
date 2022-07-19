@@ -1,62 +1,62 @@
 reset
 !new Mobile('t')
 !t.name:='target'
-!t._position:=10.0
-!t.sensor_accuracy := 0.1 -- precision
+!t._position:=10.00
+!t.sensor_accuracy := 0.3 -- precision
 
 
 !new Robot('br')
-!br.sensor_accuracy := 0.1 -- precision
+!br.sensor_accuracy := 0.3 -- precision
 !br.name:='BasicRobot'
 !insert(br,t) into Chase
 
 !new Robot('rr')
-!rr.sensor_accuracy := 0.1 -- precision
+!rr.sensor_accuracy := 0.3 -- precision
 !rr.name:='RobustRobot'
 !insert(rr,t) into Chase
 
 !new Robot('pr9999')
-!pr9999.sensor_accuracy := 0.1 -- precision
+!pr9999.sensor_accuracy := 0.3 -- precision
 !pr9999.name:='ProbRobot9999'
 !insert(pr9999,t) into Chase
 
 !new Robot('pr999')
-!pr999.sensor_accuracy := 0.1 -- precision
+!pr999.sensor_accuracy := 0.3 -- precision
 !pr999.name:='ProbRobot999'
 !insert(pr999,t) into Chase
 
 !new Robot('pr99')
-!pr99.sensor_accuracy := 0.1 -- precision
+!pr99.sensor_accuracy := 0.3 -- precision
 !pr99.name:='ProbRobot99'
 !insert(pr99,t) into Chase
 
 !new Robot('pr95')
-!pr95.sensor_accuracy := 0.1 -- precision
+!pr95.sensor_accuracy := 0.3 -- precision
 !pr95.name:='ProbRobot95'
 !insert(pr95,t) into Chase
 
 !new Robot('ur9999')
-!ur9999.sensor_accuracy := 0.1 -- precision
+!ur9999.sensor_accuracy := 0.31 -- precision
 !ur9999.name:='URobot9999'
 !insert(ur9999,t) into Chase
 
 !new Robot('ur999')
-!ur999.sensor_accuracy := 0.1 -- precision
+!ur999.sensor_accuracy := 0.31 -- precision
 !ur999.name:='URobot999'
 !insert(ur999,t) into Chase
 
 !new Robot('ur99')
-!ur99.sensor_accuracy := 0.1 -- precision
+!ur99.sensor_accuracy := 0.31 -- precision
 !ur99.name:='URobot99'
 !insert(ur99,t) into Chase
 
 !new Robot('ur95')
-!ur95.sensor_accuracy := 0.1 -- precision
+!ur95.sensor_accuracy := 0.31 -- precision
 !ur95.name:='URobot95'
 !insert(ur95,t) into Chase
 
 !new Robot('ur')
-!ur.sensor_accuracy := 0.1 -- precision
+!ur.sensor_accuracy := 0.31 -- precision
 !ur.name:='URobot'
 !insert(ur,t) into Chase
 
@@ -108,7 +108,7 @@ reset
 !insert(uc,ur) into Control
 
 
-?(-1).srand() -- seed
+-- ?(-1).srand() -- seed
 
 !new System('s')
 -- !s.move(t,1)     -- target, time
